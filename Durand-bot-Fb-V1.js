@@ -1,4 +1,4 @@
-const login = require('@xaviabot/fca-unofficial'); // Package qui fonctionne
+const login = require('fca-unofficial'); // Changé de 'fb-chat-api' vers 'fca-unofficial'
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
@@ -34,6 +34,7 @@ class FacebookBot extends EventEmitter {
         this.stopListening = null;
     }
 
+    // Logger amélioré
     log(level, message, data = null) {
         const timestamp = new Date().toISOString();
         const logMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
@@ -57,6 +58,7 @@ class FacebookBot extends EventEmitter {
         }
     }
 
+    // Chargement de l'appstate
     async loadAppState() {
         try {
             if (!fsSync.existsSync(CONFIG.APPSTATE_FILE)) {
@@ -66,10 +68,12 @@ class FacebookBot extends EventEmitter {
             const appStateData = await fs.readFile(CONFIG.APPSTATE_FILE, 'utf8');
             let appState = JSON.parse(appStateData);
 
+            // Validation de l'appstate
             if (!Array.isArray(appState) || appState.length === 0) {
                 throw new Error('Format appstate invalide');
             }
 
+            // Vérifier les cookies critiques
             const criticalCookies = ['c_user', 'xs', 'datr', 'fr'];
             const presentCritical = criticalCookies.filter(name => 
                 appState.some(cookie => cookie.key === name || cookie.name === name)
@@ -80,6 +84,8 @@ class FacebookBot extends EventEmitter {
             }
 
             this.log('info', `AppState chargé avec ${appState.length} cookies`);
+            this.log('info', `Cookies critiques: ${presentCritical.join(', ')}`);
+            
             return appState;
 
         } catch (error) {
@@ -88,6 +94,7 @@ class FacebookBot extends EventEmitter {
         }
     }
 
+    // Sauvegarder l'appstate
     async saveAppState(appState) {
         try {
             const appStateJson = JSON.stringify(appState, null, 2);
@@ -98,8 +105,16 @@ class FacebookBot extends EventEmitter {
         }
     }
 
+    // Chargement des commandes
     async loadCommands(force = false) {
         try {
+            if (!force && this.commands.size > 0) {
+                const commandsDir = await fs.stat(CONFIG.COMMANDS_DIR).catch(() => null);
+                if (commandsDir && commandsDir.mtime <= this.commandsLastLoaded) {
+                    return this.commands;
+                }
+            }
+
             if (!fsSync.existsSync(CONFIG.COMMANDS_DIR)) {
                 await fs.mkdir(CONFIG.COMMANDS_DIR, { recursive: true });
                 this.log('info', 'Dossier Commandes/ créé');
@@ -124,12 +139,15 @@ class FacebookBot extends EventEmitter {
                         this.commands.set(commandName, command);
                         loadedCount++;
                         this.log('info', `Commande chargée: ${commandName}`);
+                    } else {
+                        this.log('warn', `Commande invalide ignorée: ${commandName}`);
                     }
                 } catch (error) {
                     this.log('error', `Erreur chargement ${file}:`, error.message);
                 }
             }
 
+            this.commandsLastLoaded = Date.now();
             this.log('info', `${loadedCount} commande(s) chargée(s)`);
             return this.commands;
 
@@ -139,88 +157,167 @@ class FacebookBot extends EventEmitter {
         }
     }
 
+    // Gestionnaire de messages
     async handleMessage(event) {
         try {
-            if (event.type !== 'message' || !event.body) return;
+            // Vérifier le type d'événement
+            if (event.type !== 'message') return;
             
-            if (event.senderID === this.api.getCurrentUserID()) return;
+            // Ignorer ses propres messages et messages vides
+            if (!event.body || 
+                event.senderID === this.api.getCurrentUserID() ||
+                event.isGroup === false && event.senderID === event.threadID) {
+                return;
+            }
 
             const messageBody = event.body.trim();
             if (!messageBody.startsWith(CONFIG.COMMAND_PREFIX)) return;
 
-            const [commandName, ...args] = messageBody.slice(CONFIG.COMMAND_PREFIX.length).trim().split(/\s+/);
+            // Parser la commande
+            const args = messageBody.slice(CONFIG.COMMAND_PREFIX.length).trim().split(/\s+/);
+            const commandName = args.shift()?.toLowerCase();
+            
             if (!commandName) return;
 
+            // Marquer comme lu
+            this.api.markAsRead(event.threadID, (err) => {
+                if (err) this.log('warn', 'Erreur markAsRead:', err.message);
+            });
+
+            // Recharger les commandes si nécessaire
             await this.loadCommands();
 
-            if (!this.commands.has(commandName.toLowerCase())) {
+            // Vérifier l'existence de la commande
+            if (!this.commands.has(commandName)) {
                 await this.sendMessage(
-                    `❌ Commande "${commandName}" introuvable.`,
+                    `❌ Commande "${commandName}" introuvable. Tapez ${CONFIG.COMMAND_PREFIX}help pour voir les commandes disponibles.`,
                     event.threadID
                 );
                 return;
             }
 
-            this.log('info', `Exécution: ${commandName}`);
+            // Obtenir les infos utilisateur
+            const userInfo = await this.getUserInfo(event.senderID);
+            const senderName = userInfo?.name || 'Utilisateur inconnu';
 
-            const command = this.commands.get(commandName.toLowerCase());
-            await command(args, this.api, event);
+            // Logger la commande
+            const logEntry = `[${new Date().toISOString()}] ${senderName} (${event.senderID}) - Commande: ${CONFIG.COMMAND_PREFIX}${commandName} ${args.join(' ')}\n`;
+            this.writeLog(logEntry);
+
+            this.log('info', `Exécution: ${commandName} par ${senderName}`);
+
+            // Exécuter la commande
+            const command = this.commands.get(commandName);
+            await Promise.race([
+                command(args, this.api, event),
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Timeout commande')), 30000)
+                )
+            ]);
 
         } catch (error) {
             this.log('error', 'Erreur handleMessage:', error.message);
             if (event.threadID) {
                 await this.sendMessage(
-                    `❌ Erreur: ${error.message}`,
+                    `❌ Erreur lors de l'exécution: ${error.message}`,
                     event.threadID
                 ).catch(() => {});
             }
         }
     }
 
-    async sendMessage(message, threadID) {
-        return new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error('Timeout')), 10000);
+    // Wrapper sécurisé pour getUserInfo
+    async getUserInfo(userID) {
+        return new Promise((resolve) => {
+            const timeout = setTimeout(() => resolve(null), 5000);
             
-            this.api.sendMessage(message, threadID, (err, info) => {
+            this.api.getUserInfo(userID, (err, ret) => {
                 clearTimeout(timeout);
-                if (err) reject(err);
-                else resolve(info);
+                if (err || !ret || !ret[userID]) {
+                    resolve(null);
+                } else {
+                    resolve(ret[userID]);
+                }
             });
         });
     }
 
+    // Wrapper sécurisé pour sendMessage
+    async sendMessage(message, threadID) {
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error('Timeout envoi message')), 10000);
+            
+            this.api.sendMessage(message, threadID, (err, messageInfo) => {
+                clearTimeout(timeout);
+                if (err) reject(err);
+                else resolve(messageInfo);
+            });
+        });
+    }
+
+    // Connexion
     async connect() {
         try {
-            let credentials = {};
+            let loginOptions = {};
 
             if (CONFIG.LOGIN_METHOD === 'credentials' && CONFIG.FB_EMAIL && CONFIG.FB_PASSWORD) {
-                credentials = {
+                this.log('info', 'Tentative de connexion avec email/mot de passe');
+                loginOptions = {
                     email: CONFIG.FB_EMAIL,
                     password: CONFIG.FB_PASSWORD
                 };
             } else {
+                this.log('info', 'Tentative de connexion avec appstate');
                 const appState = await this.loadAppState();
-                credentials = { appState };
+                loginOptions = {
+                    appState: appState
+                };
             }
 
-            const options = {
+            // Options de connexion
+            const connectionOptions = {
                 listenEvents: true,
                 logLevel: 'silent',
+                updatePresence: false,
                 selfListen: false,
-                updatePresence: false
+                forceLogin: true,
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             };
 
+            if (CONFIG.PAGE_ID) {
+                connectionOptions.pageID = CONFIG.PAGE_ID;
+            }
+
             return new Promise((resolve, reject) => {
-                login(credentials, options, (err, api) => {
+                login(loginOptions, connectionOptions, (err, api) => {
                     if (err) {
-                        this.log('error', 'Erreur connexion:', err.message);
+                        this.log('error', 'Erreur connexion:', err.message || err.error);
+                        
+                        // Messages d'erreur spécifiques
+                        if (err.error === 'login-approval') {
+                            this.log('error', 'Approbation de connexion requise');
+                        } else if (err.error === 'checkpoint') {
+                            this.log('error', 'Checkpoint de sécurité détecté');
+                        }
+                        
                         reject(err);
                         return;
                     }
 
                     this.api = api;
                     
-                    // Sauvegarder appstate si connexion par credentials
+                    // Configuration de l'API
+                    api.setOptions({
+                        listenEvents: true,
+                        logLevel: 'silent',
+                        updatePresence: false,
+                        selfListen: false,
+                        forceLogin: true,
+                        autoMarkDelivery: false,
+                        autoMarkRead: false
+                    });
+
+                    // Sauvegarder l'appstate après connexion réussie
                     if (CONFIG.LOGIN_METHOD === 'credentials' && api.getAppState) {
                         this.saveAppState(api.getAppState());
                     }
@@ -234,16 +331,44 @@ class FacebookBot extends EventEmitter {
         }
     }
 
+    // Validation de la configuration
+    validateLoginConfig() {
+        if (CONFIG.LOGIN_METHOD === 'credentials') {
+            if (!CONFIG.FB_EMAIL || !CONFIG.FB_PASSWORD) {
+                throw new Error('FB_EMAIL et FB_PASSWORD requis pour LOGIN_METHOD=credentials');
+            }
+            this.log('info', `Email configuré: ${CONFIG.FB_EMAIL.substring(0, 3)}***`);
+        } else {
+            if (!fsSync.existsSync(CONFIG.APPSTATE_FILE)) {
+                throw new Error(`Fichier ${CONFIG.APPSTATE_FILE} manquant pour LOGIN_METHOD=appstate`);
+            }
+            this.log('info', 'Fichier appstate trouvé');
+        }
+    }
+
+    // Démarrage avec retry
     async start() {
+        try {
+            this.validateLoginConfig();
+        } catch (error) {
+            this.log('error', 'Configuration invalide:', error.message);
+            process.exit(1);
+        }
+
         while (this.retryCount < CONFIG.MAX_RETRIES && !this.isShuttingDown) {
             try {
-                this.log('info', `Connexion ${this.retryCount + 1}/${CONFIG.MAX_RETRIES}`);
+                this.log('info', `Tentative de connexion ${this.retryCount + 1}/${CONFIG.MAX_RETRIES}`);
                 
                 await this.connect();
                 this.log('info', '✅ Connexion réussie!');
                 
+                // Charger les commandes
                 await this.loadCommands(true);
+                
+                // Démarrer l'écoute
                 this.startListening();
+                
+                // Démarrer le serveur HTTP
                 this.startHttpServer();
                 
                 this.retryCount = 0;
@@ -251,32 +376,56 @@ class FacebookBot extends EventEmitter {
 
             } catch (error) {
                 this.retryCount++;
-                this.log('error', `Échec ${this.retryCount}:`, error.message);
+                this.log('error', `Échec connexion (${this.retryCount}/${CONFIG.MAX_RETRIES}):`, error.message);
                 
                 if (this.retryCount < CONFIG.MAX_RETRIES) {
-                    await new Promise(r => setTimeout(r, CONFIG.RETRY_DELAY));
+                    this.log('info', `Nouvelle tentative dans ${CONFIG.RETRY_DELAY/1000}s...`);
+                    await new Promise(resolve => setTimeout(resolve, CONFIG.RETRY_DELAY));
                 } else {
+                    this.log('error', 'Nombre maximum de tentatives atteint');
                     process.exit(1);
                 }
             }
         }
     }
 
+    // Écoute des messages
     startListening() {
         try {
-            this.stopListening = this.api.listen((err, event) => {
+            // Utiliser listen ou listenMqtt selon la disponibilité
+            const listenMethod = this.api.listenMqtt || this.api.listen;
+            
+            this.stopListening = listenMethod.call(this.api, (err, event) => {
                 if (err) {
                     this.log('error', 'Erreur écoute:', err.message);
-                    if (err.message.includes('Connection closed')) {
+                    
+                    // Gestion spécifique de l'erreur successful_results
+                    if (err.message && err.message.includes('successful_results')) {
+                        this.log('warn', 'Erreur successful_results détectée - tentative de récupération');
+                        
+                        // Redémarrer l'écoute après un délai
+                        setTimeout(() => {
+                            this.log('info', 'Redémarrage de l\'écoute...');
+                            this.startListening();
+                        }, 3000);
+                        return;
+                    }
+                    
+                    // Redémarrage automatique pour autres erreurs critiques
+                    if (err.error === 'Connection closed.' || err.message.includes('Connection closed')) {
+                        this.log('info', 'Reconnexion automatique...');
                         setTimeout(() => this.start(), 5000);
                     }
                     return;
                 }
+
+                // Traiter l'événement
                 this.handleMessage(event);
             });
 
-            this.log('info', '🤖 Bot en écoute...');
+            this.log('info', '🤖 Bot démarré et en écoute...');
             this.log('info', `💬 Préfixe: ${CONFIG.COMMAND_PREFIX}`);
+            this.log('info', `🔐 Méthode: ${CONFIG.LOGIN_METHOD}`);
             
         } catch (error) {
             this.log('error', 'Erreur startListening:', error.message);
@@ -284,34 +433,59 @@ class FacebookBot extends EventEmitter {
         }
     }
 
+    // Serveur HTTP pour monitoring
     startHttpServer() {
         this.server = http.createServer((req, res) => {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-                status: 'Bot Facebook actif',
+            res.writeHead(200, { 
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            });
+            
+            const status = {
+                status: 'Bot Facebook Messenger actif',
                 timestamp: new Date().toISOString(),
                 uptime: process.uptime(),
                 commands: this.commands.size,
-                library: '@xaviabot/fca-unofficial'
-            }, null, 2));
+                retryCount: this.retryCount,
+                loginMethod: CONFIG.LOGIN_METHOD,
+                memory: process.memoryUsage(),
+                api_connected: this.api ? true : false
+            };
+            
+            res.end(JSON.stringify(status, null, 2));
         });
 
         this.server.listen(CONFIG.PORT, () => {
-            this.log('info', `🌐 Serveur sur port ${CONFIG.PORT}`);
+            this.log('info', `🌐 Serveur HTTP sur port ${CONFIG.PORT}`);
+        });
+
+        this.server.on('error', (error) => {
+            this.log('error', 'Erreur serveur HTTP:', error.message);
         });
     }
 
+    // Arrêt propre
     async shutdown() {
         if (this.isShuttingDown) return;
+        
         this.isShuttingDown = true;
         this.log('info', '🛑 Arrêt du bot...');
 
         try {
-            if (this.stopListening) this.stopListening();
-            if (this.server) this.server.close();
-            if (this.api) this.api.logout?.();
+            if (this.stopListening) {
+                this.stopListening();
+            }
+            
+            if (this.server) {
+                this.server.close();
+            }
+            
+            if (this.api) {
+                this.api.logout?.();
+            }
+            
         } catch (error) {
-            this.log('error', 'Erreur arrêt:', error.message);
+            this.log('error', 'Erreur lors de l\'arrêt:', error.message);
         }
 
         process.exit(0);
@@ -321,10 +495,12 @@ class FacebookBot extends EventEmitter {
 // Initialisation
 const bot = new FacebookBot();
 
+// Gestion des signaux
 process.on('SIGINT', () => bot.shutdown());
 process.on('SIGTERM', () => bot.shutdown());
 
-process.on('unhandledRejection', (reason) => {
+// Gestion des erreurs
+process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection:', reason);
     bot.log('error', 'Unhandled Rejection:', reason);
 });
@@ -335,7 +511,8 @@ process.on('uncaughtException', (error) => {
     bot.shutdown();
 });
 
+// Démarrage
 bot.start().catch((error) => {
-    console.error('Erreur fatale:', error);
+    console.error('Erreur fatale au démarrage:', error);
     process.exit(1);
 });
