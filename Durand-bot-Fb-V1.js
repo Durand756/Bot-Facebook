@@ -6,7 +6,7 @@ const http = require('http');
 const { EventEmitter } = require('events');
 require('dotenv').config();
 
-// Configuration avec validation
+// Configuration avec validation 
 const CONFIG = {
     COMMAND_PREFIX: process.env.COMMAND_PREFIX || '/',
     COMMANDS_DIR: path.join(__dirname, 'Commandes'),
