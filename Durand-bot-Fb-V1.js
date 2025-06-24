@@ -17,7 +17,7 @@ const CONFIG = {
     RETRY_DELAY: 5000,
     LOG_LEVEL: process.env.LOG_LEVEL || 'info',
     // Nouvelles options de connexion
-    LOGIN_METHOD: process.env.LOGIN_METHOD || 'cookies', // 'cookies', 'email', 'phone'
+    LOGIN_METHOD: process.env.LOGIN_METHOD || 'cookies',
     FB_EMAIL: process.env.FB_EMAIL || '',
     FB_PASSWORD: process.env.FB_PASSWORD || '',
     FB_PHONE: process.env.FB_PHONE || ''
@@ -32,6 +32,7 @@ class FacebookBot extends EventEmitter {
         this.isShuttingDown = false;
         this.server = null;
         this.commandsLastLoaded = 0;
+        this.listenStopCallback = null;
     }
 
     // Logger amélioré avec niveaux
@@ -206,8 +207,10 @@ class FacebookBot extends EventEmitter {
     // Gestionnaire de messages optimisé
     async handleMessage(message) {
         try {
-            // Ignorer ses propres messages et messages système
-            if (!message.body || 
+            // Validation message plus robuste
+            if (!message || 
+                typeof message !== 'object' ||
+                !message.body || 
                 message.senderID === this.api.getCurrentUserID() ||
                 message.type !== 'message') {
                 return;
@@ -255,7 +258,7 @@ class FacebookBot extends EventEmitter {
 
         } catch (error) {
             this.log('error', 'Erreur handleMessage:', error.message);
-            if (message.threadID) {
+            if (message && message.threadID) {
                 await this.sendMessage(
                     `❌ Erreur lors de l'exécution: ${error.message}`,
                     message.threadID
@@ -476,26 +479,78 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Écoute des messages avec gestion d'erreurs
+    // Écoute des messages avec gestion d'erreurs AMÉLIORÉE
     startListening() {
-        this.api.listenMqtt((err, message) => {
+        // Arrêter l'écoute précédente si elle existe
+        if (this.listenStopCallback) {
+            try {
+                this.listenStopCallback();
+            } catch (error) {
+                this.log('warn', 'Erreur arrêt écoute précédente:', error.message);
+            }
+        }
+
+        // Démarrer l'écoute avec gestion d'erreur robuste
+        this.listenStopCallback = this.api.listenMqtt((err, message) => {
             if (err) {
                 this.log('error', 'Erreur écoute MQTT:', err.message);
                 
-                // Redémarrage automatique en cas d'erreur critique
-                if (err.error === 'Connection closed.') {
-                    this.log('info', 'Reconnexion automatique...');
-                    setTimeout(() => this.start(), 5000);
+                // Gestion spécifique de l'erreur successful_results
+                if (err.message && err.message.includes('successful_results')) {
+                    this.log('warn', 'Erreur successful_results détectée - tentative de récupération...');
+                    
+                    // Attendre un peu avant de redémarrer l'écoute
+                    setTimeout(() => {
+                        if (!this.isShuttingDown) {
+                            this.log('info', 'Redémarrage de l\'écoute MQTT...');
+                            this.startListening();
+                        }
+                    }, 3000);
+                    return;
                 }
+                
+                // Redémarrage automatique en cas d'erreur critique
+                if (err.error === 'Connection closed.' || err.message.includes('ECONNRESET')) {
+                    this.log('info', 'Connexion fermée - reconnexion automatique...');
+                    setTimeout(() => {
+                        if (!this.isShuttingDown) {
+                            this.start();
+                        }
+                    }, 5000);
+                    return;
+                }
+
+                // Pour d'autres erreurs, continuer l'écoute après un délai
+                setTimeout(() => {
+                    if (!this.isShuttingDown) {
+                        this.startListening();
+                    }
+                }, 2000);
+                
                 return;
             }
 
-            this.handleMessage(message);
+            // Traitement du message avec validation supplémentaire
+            if (message && typeof message === 'object') {
+                this.handleMessage(message).catch(error => {
+                    this.log('error', 'Erreur traitement message:', error.message);
+                });
+            }
         });
 
         this.log('info', '🤖 Bot démarré et en écoute...');
         this.log('info', `💬 Préfixe: ${CONFIG.COMMAND_PREFIX}`);
         this.log('info', `🔐 Méthode de connexion: ${CONFIG.LOGIN_METHOD}`);
+        
+        // Test de fonctionnement - envoyer un message de test si défini
+        if (process.env.TEST_THREAD_ID) {
+            this.sendMessage(
+                `🤖 Bot redémarré avec succès à ${new Date().toLocaleString()}`, 
+                process.env.TEST_THREAD_ID
+            ).catch(error => {
+                this.log('warn', 'Impossible d\'envoyer le message de test:', error.message);
+            });
+        }
     }
 
     // Serveur HTTP pour le monitoring
@@ -513,7 +568,9 @@ class FacebookBot extends EventEmitter {
                 commands: this.commands.size,
                 retryCount: this.retryCount,
                 loginMethod: CONFIG.LOGIN_METHOD,
-                memory: process.memoryUsage()
+                memory: process.memoryUsage(),
+                listening: !!this.listenStopCallback,
+                connected: !!this.api
             };
             
             res.end(JSON.stringify(status, null, 2));
@@ -537,10 +594,18 @@ class FacebookBot extends EventEmitter {
         this.log('info', '🛑 Arrêt du bot...');
 
         try {
+            // Arrêter l'écoute
+            if (this.listenStopCallback) {
+                this.listenStopCallback();
+                this.listenStopCallback = null;
+            }
+
+            // Fermer le serveur
             if (this.server) {
                 this.server.close();
             }
             
+            // Déconnexion API
             if (this.api) {
                 this.api.logout?.();
             }
