@@ -1,4 +1,4 @@
-const login = require('facebook-chat-api');
+const login = require('fb-chat-api'); // Utilisez 'fb-chat-api' de ntkhang
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
@@ -10,17 +10,17 @@ require('dotenv').config();
 const CONFIG = {
     COMMAND_PREFIX: process.env.COMMAND_PREFIX || '/',
     COMMANDS_DIR: path.join(__dirname, 'Commandes'),
-    COOKIES_FILE: 'cookies.json',
+    APPSTATE_FILE: 'appstate.json', // Changé de cookies.json à appstate.json
     LOGS_FILE: 'logs.txt',
     PORT: process.env.PORT || 3000,
     MAX_RETRIES: 3,
     RETRY_DELAY: 5000,
     LOG_LEVEL: process.env.LOG_LEVEL || 'info',
-    // Nouvelles options de connexion
-    LOGIN_METHOD: process.env.LOGIN_METHOD || 'cookies', // 'cookies', 'email', 'phone'
+    // Options de connexion adaptées à ntkhang
+    LOGIN_METHOD: process.env.LOGIN_METHOD || 'appstate',
     FB_EMAIL: process.env.FB_EMAIL || '',
     FB_PASSWORD: process.env.FB_PASSWORD || '',
-    FB_PHONE: process.env.FB_PHONE || ''
+    PAGE_ID: process.env.PAGE_ID || null
 };
 
 class FacebookBot extends EventEmitter {
@@ -32,10 +32,10 @@ class FacebookBot extends EventEmitter {
         this.isShuttingDown = false;
         this.server = null;
         this.commandsLastLoaded = 0;
-        this.listenLoopActive = false;
+        this.stopListening = null;
     }
 
-    // Logger amélioré avec niveaux
+    // Logger amélioré
     log(level, message, data = null) {
         const timestamp = new Date().toISOString();
         const logMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
@@ -46,7 +46,6 @@ class FacebookBot extends EventEmitter {
             console.log(logMessage);
         }
 
-        // Écriture asynchrone des logs critiques
         if (['error', 'warn'].includes(level)) {
             this.writeLog(`${logMessage}${data ? ` - Data: ${JSON.stringify(data)}` : ''}\n`);
         }
@@ -60,97 +59,56 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Gestion sécurisée des cookies avec validation améliorée
-    async loadCookies() {
+    // Chargement de l'appstate (technique ntkhang)
+    async loadAppState() {
         try {
-            if (!fsSync.existsSync(CONFIG.COOKIES_FILE)) {
-                throw new Error(`Fichier ${CONFIG.COOKIES_FILE} manquant`);
+            if (!fsSync.existsSync(CONFIG.APPSTATE_FILE)) {
+                throw new Error(`Fichier ${CONFIG.APPSTATE_FILE} manquant`);
             }
 
-            const cookiesData = await fs.readFile(CONFIG.COOKIES_FILE, 'utf8');
-            let cookies = JSON.parse(cookiesData);
+            const appStateData = await fs.readFile(CONFIG.APPSTATE_FILE, 'utf8');
+            let appState = JSON.parse(appStateData);
 
-            // Validation et nettoyage des cookies
-            if (!Array.isArray(cookies) || cookies.length === 0) {
-                throw new Error('Format de cookies invalide');
+            // Validation de l'appstate
+            if (!Array.isArray(appState) || appState.length === 0) {
+                throw new Error('Format appstate invalide');
             }
 
-            // Normaliser le format des cookies
-            cookies = cookies.map(cookie => {
-                // Si le cookie utilise l'ancien format (name/value)
-                if (cookie.name && !cookie.key) {
-                    cookie.key = cookie.name;
-                }
-                if (cookie.value && typeof cookie.value === 'string') {
-                    // Décoder les valeurs URL encodées si nécessaire
-                    try {
-                        cookie.value = decodeURIComponent(cookie.value);
-                    } catch (e) {
-                        // Garder la valeur originale si le décodage échoue
-                    }
-                }
-
-                // Normaliser le domaine
-                if (cookie.domain) {
-                    if (cookie.domain.startsWith('.facebook.com')) {
-                        cookie.domain = 'facebook.com';
-                    } else if (cookie.domain.startsWith('.messenger.com')) {
-                        cookie.domain = 'messenger.com';
-                    }
-                }
-
-                // Assurer que les cookies critiques sont présents
-                const criticalCookies = ['datr', 'fr', 'c_user', 'xs'];
-                if (criticalCookies.includes(cookie.key) || criticalCookies.includes(cookie.name)) {
-                    cookie.httpOnly = true;
-                    cookie.secure = true;
-                }
-
-                return cookie;
-            });
-
-            // Filtrer les cookies valides
-            const validCookies = cookies.filter(cookie => {
-                const key = cookie.key || cookie.name;
-                return key && cookie.value && key.length > 0;
-            });
-
-            // Vérifier la présence de cookies critiques
-            const criticalCookies = ['c_user', 'xs', 'datr'];
+            // Vérifier les cookies critiques
+            const criticalCookies = ['c_user', 'xs', 'datr', 'fr'];
             const presentCritical = criticalCookies.filter(name => 
-                validCookies.some(cookie => (cookie.key === name || cookie.name === name))
+                appState.some(cookie => cookie.key === name || cookie.name === name)
             );
 
             if (presentCritical.length < 2) {
                 throw new Error(`Cookies critiques manquants. Présents: ${presentCritical.join(', ')}`);
             }
 
-            this.log('info', `${validCookies.length} cookies valides chargés`);
-            this.log('info', `Cookies critiques présents: ${presentCritical.join(', ')}`);
+            this.log('info', `AppState chargé avec ${appState.length} cookies`);
+            this.log('info', `Cookies critiques: ${presentCritical.join(', ')}`);
             
-            return validCookies;
+            return appState;
 
         } catch (error) {
-            this.log('error', 'Erreur chargement cookies:', error.message);
+            this.log('error', 'Erreur chargement appstate:', error.message);
             throw error;
         }
     }
 
-    // Sauvegarder les cookies après connexion réussie
-    async saveCookies(appState) {
+    // Sauvegarder l'appstate
+    async saveAppState(appState) {
         try {
-            const cookiesJson = JSON.stringify(appState, null, 2);
-            await fs.writeFile(CONFIG.COOKIES_FILE, cookiesJson);
-            this.log('info', 'Cookies sauvegardés avec succès');
+            const appStateJson = JSON.stringify(appState, null, 2);
+            await fs.writeFile(CONFIG.APPSTATE_FILE, appStateJson);
+            this.log('info', 'AppState sauvegardé avec succès');
         } catch (error) {
-            this.log('error', 'Erreur sauvegarde cookies:', error.message);
+            this.log('error', 'Erreur sauvegarde appstate:', error.message);
         }
     }
 
-    // Chargement optimisé des commandes avec cache
+    // Chargement des commandes
     async loadCommands(force = false) {
         try {
-            // Vérifier si rechargement nécessaire
             if (!force && this.commands.size > 0) {
                 const commandsDir = await fs.stat(CONFIG.COMMANDS_DIR).catch(() => null);
                 if (commandsDir && commandsDir.mtime <= this.commandsLastLoaded) {
@@ -158,7 +116,6 @@ class FacebookBot extends EventEmitter {
                 }
             }
 
-            // Créer le dossier si nécessaire
             if (!fsSync.existsSync(CONFIG.COMMANDS_DIR)) {
                 await fs.mkdir(CONFIG.COMMANDS_DIR, { recursive: true });
                 this.log('info', 'Dossier Commandes/ créé');
@@ -176,12 +133,9 @@ class FacebookBot extends EventEmitter {
                     const commandName = path.basename(file, '.js');
                     const commandPath = path.join(CONFIG.COMMANDS_DIR, file);
                     
-                    // Supprimer du cache pour rechargement
                     delete require.cache[require.resolve(commandPath)];
-                    
                     const command = require(commandPath);
                     
-                    // Validation de la commande
                     if (typeof command === 'function') {
                         this.commands.set(commandName, command);
                         loadedCount++;
@@ -204,82 +158,71 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Gestionnaire de messages optimisé avec debugging
-    async handleMessage(message) {
+    // Gestionnaire de messages amélioré selon ntkhang
+    async handleMessage(event) {
         try {
-            // Debug: afficher le message reçu
-            this.log('debug', 'Message reçu:', {
-                type: message.type,
-                body: message.body,
-                senderID: message.senderID,
-                threadID: message.threadID
-            });
-
-            // Ignorer ses propres messages et messages système
-            if (!message.body || 
-                message.senderID === this.api.getCurrentUserID() ||
-                message.type !== 'message') {
-                this.log('debug', 'Message ignoré (propre message ou système)');
-                return;
-            }
-
-            const messageBody = message.body.trim();
-            this.log('debug', `Message traité: "${messageBody}"`);
+            // Vérifier le type d'événement
+            if (event.type !== 'message') return;
             
-            if (!messageBody.startsWith(CONFIG.COMMAND_PREFIX)) {
-                this.log('debug', `Pas une commande (préfixe: ${CONFIG.COMMAND_PREFIX})`);
+            // Ignorer ses propres messages et messages vides
+            if (!event.body || 
+                event.senderID === this.api.getCurrentUserID() ||
+                event.isGroup === false && event.senderID === event.threadID) {
                 return;
             }
+
+            const messageBody = event.body.trim();
+            if (!messageBody.startsWith(CONFIG.COMMAND_PREFIX)) return;
 
             // Parser la commande
             const args = messageBody.slice(CONFIG.COMMAND_PREFIX.length).trim().split(/\s+/);
             const commandName = args.shift()?.toLowerCase();
             
-            this.log('debug', `Commande parsée: ${commandName}, args: [${args.join(', ')}]`);
-            
             if (!commandName) return;
+
+            // Marquer comme lu
+            this.api.markAsRead(event.threadID, (err) => {
+                if (err) this.log('warn', 'Erreur markAsRead:', err.message);
+            });
 
             // Recharger les commandes si nécessaire
             await this.loadCommands();
 
             // Vérifier l'existence de la commande
             if (!this.commands.has(commandName)) {
-                this.log('debug', `Commande ${commandName} non trouvée`);
                 await this.sendMessage(
                     `❌ Commande "${commandName}" introuvable. Tapez ${CONFIG.COMMAND_PREFIX}help pour voir les commandes disponibles.`,
-                    message.threadID
+                    event.threadID
                 );
                 return;
             }
 
-            // Obtenir les infos utilisateur avec timeout
-            const userInfo = await this.getUserInfo(message.senderID);
+            // Obtenir les infos utilisateur
+            const userInfo = await this.getUserInfo(event.senderID);
             const senderName = userInfo?.name || 'Utilisateur inconnu';
 
             // Logger la commande
-            const logEntry = `[${new Date().toISOString()}] ${senderName} (${message.senderID}) - Commande: ${CONFIG.COMMAND_PREFIX}${commandName} ${args.join(' ')}\n`;
+            const logEntry = `[${new Date().toISOString()}] ${senderName} (${event.senderID}) - Commande: ${CONFIG.COMMAND_PREFIX}${commandName} ${args.join(' ')}\n`;
             this.writeLog(logEntry);
 
             this.log('info', `Exécution: ${commandName} par ${senderName}`);
 
-            // Exécuter la commande avec timeout
+            // Exécuter la commande
             const command = this.commands.get(commandName);
             await Promise.race([
-                command(args, this.api, message),
+                command(args, this.api, event),
                 new Promise((_, reject) => 
                     setTimeout(() => reject(new Error('Timeout commande')), 30000)
                 )
             ]);
 
-            this.log('info', `Commande ${commandName} exécutée avec succès`);
-
         } catch (error) {
             this.log('error', 'Erreur handleMessage:', error.message);
-            if (message.threadID) {
+            if (event.threadID) {
                 await this.sendMessage(
                     `❌ Erreur lors de l'exécution: ${error.message}`,
-                    message.threadID
-                ).catch(() => {}); // Éviter les erreurs en cascade
+                    event.threadID
+                ).catch(() => {});
             }
         }
     }
@@ -307,85 +250,54 @@ class FacebookBot extends EventEmitter {
             
             this.api.sendMessage(message, threadID, (err, messageInfo) => {
                 clearTimeout(timeout);
-                if (err) {
-                    this.log('error', 'Erreur envoi message:', err.message);
-                    reject(err);
-                } else {
-                    this.log('debug', 'Message envoyé avec succès');
-                    resolve(messageInfo);
-                }
+                if (err) reject(err);
+                else resolve(messageInfo);
             });
         });
     }
 
-    // Déterminer la méthode de connexion
-    getLoginCredentials() {
-        const method = CONFIG.LOGIN_METHOD.toLowerCase();
-        
-        switch (method) {
-            case 'email':
-                if (!CONFIG.FB_EMAIL || !CONFIG.FB_PASSWORD) {
-                    throw new Error('FB_EMAIL et FB_PASSWORD requis pour la connexion par email');
-                }
-                return {
+    // Connexion avec technique ntkhang
+    async connect() {
+        try {
+            let loginOptions = {};
+
+            if (CONFIG.LOGIN_METHOD === 'credentials' && CONFIG.FB_EMAIL && CONFIG.FB_PASSWORD) {
+                this.log('info', 'Tentative de connexion avec email/mot de passe');
+                loginOptions = {
                     email: CONFIG.FB_EMAIL,
                     password: CONFIG.FB_PASSWORD
                 };
-            
-            case 'phone':
-                if (!CONFIG.FB_PHONE || !CONFIG.FB_PASSWORD) {
-                    throw new Error('FB_PHONE et FB_PASSWORD requis pour la connexion par téléphone');
-                }
-                return {
-                    email: CONFIG.FB_PHONE, // facebook-chat-api utilise le champ email pour le téléphone aussi
-                    password: CONFIG.FB_PASSWORD
-                };
-            
-            case 'cookies':
-            default:
-                return null; // Utiliser les cookies
-        }
-    }
-
-    // Connexion avec multiple méthodes et gestion d'erreurs améliorée
-    async connect() {
-        try {
-            const credentials = this.getLoginCredentials();
-            let options = {};
-
-            if (credentials) {
-                // Connexion avec email/téléphone + mot de passe
-                this.log('info', `Tentative de connexion avec ${CONFIG.LOGIN_METHOD}`);
-                options = {
-                    email: credentials.email,
-                    password: credentials.password
-                };
             } else {
-                // Connexion avec cookies
-                this.log('info', 'Tentative de connexion avec cookies');
-                const cookies = await this.loadCookies();
-                options = {
-                    appState: cookies
+                this.log('info', 'Tentative de connexion avec appstate');
+                const appState = await this.loadAppState();
+                loginOptions = {
+                    appState: appState
                 };
             }
 
-            // Ajouter des options supplémentaires
-            if (process.env.PAGE_ID) {
-                options.pageID = process.env.PAGE_ID;
+            // Options de connexion selon ntkhang
+            const connectionOptions = {
+                listenEvents: true,
+                logLevel: 'silent',
+                updatePresence: false,
+                selfListen: false,
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            };
+
+            if (CONFIG.PAGE_ID) {
+                connectionOptions.pageID = CONFIG.PAGE_ID;
             }
 
             return new Promise((resolve, reject) => {
-                login(options, (err, api) => {
+                login(loginOptions, connectionOptions, (err, api) => {
                     if (err) {
-                        this.log('error', 'Erreur connexion:', err);
+                        this.log('error', 'Erreur connexion:', err.message || err.error);
                         
-                        // Messages d'erreur plus explicites
+                        // Messages d'erreur spécifiques
                         if (err.error === 'login-approval') {
-                            this.log('error', 'Approbation de connexion requise. Vérifiez votre téléphone/email.');
+                            this.log('error', 'Approbation de connexion requise');
                         } else if (err.error === 'checkpoint') {
-                            this.log('error', 'Checkpoint de sécurité détecté. Connectez-vous manuellement à Facebook.');
-                        } else if (err.error === 'Wrong username/password.') {
-                            this.log('error', 'Email/téléphone ou mot de passe incorrect.');
+                            this.log('error', 'Checkpoint de sécurité détecté');
                         }
                         
                         reject(err);
@@ -394,18 +306,20 @@ class FacebookBot extends EventEmitter {
 
                     this.api = api;
                     
-                    // Configuration optimisée de l'API
+                    // Configuration de l'API selon ntkhang
                     api.setOptions({
                         listenEvents: true,
                         logLevel: 'silent',
                         updatePresence: false,
                         selfListen: false,
-                        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                        forceLogin: true,
+                        autoMarkDelivery: false,
+                        autoMarkRead: false
                     });
 
-                    // Sauvegarder les cookies après connexion réussie
-                    if (credentials && api.getAppState) {
-                        this.saveCookies(api.getAppState());
+                    // Sauvegarder l'appstate après connexion réussie
+                    if (CONFIG.LOGIN_METHOD === 'credentials' && api.getAppState) {
+                        this.saveAppState(api.getAppState());
                     }
 
                     resolve(api);
@@ -417,44 +331,24 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Validation des paramètres de connexion au démarrage
+    // Validation de la configuration
     validateLoginConfig() {
-        const method = CONFIG.LOGIN_METHOD.toLowerCase();
-        
-        this.log('info', `Méthode de connexion: ${method}`);
-        
-        switch (method) {
-            case 'email':
-                if (!CONFIG.FB_EMAIL || !CONFIG.FB_PASSWORD) {
-                    throw new Error('Ajoutez FB_EMAIL et FB_PASSWORD dans votre fichier .env pour la connexion par email');
-                }
-                this.log('info', `Email configuré: ${CONFIG.FB_EMAIL.substring(0, 3)}***`);
-                break;
-                
-            case 'phone':
-                if (!CONFIG.FB_PHONE || !CONFIG.FB_PASSWORD) {
-                    throw new Error('Ajoutez FB_PHONE et FB_PASSWORD dans votre fichier .env pour la connexion par téléphone');
-                }
-                this.log('info', `Téléphone configuré: ${CONFIG.FB_PHONE.substring(0, 3)}***`);
-                break;
-                
-            case 'cookies':
-                if (!fsSync.existsSync(CONFIG.COOKIES_FILE)) {
-                    throw new Error(`Fichier ${CONFIG.COOKIES_FILE} manquant pour la connexion par cookies`);
-                }
-                this.log('info', 'Fichier cookies trouvé');
-                break;
-                
-            default:
-                this.log('warn', `Méthode de connexion inconnue: ${method}. Utilisation des cookies par défaut.`);
-                CONFIG.LOGIN_METHOD = 'cookies';
+        if (CONFIG.LOGIN_METHOD === 'credentials') {
+            if (!CONFIG.FB_EMAIL || !CONFIG.FB_PASSWORD) {
+                throw new Error('FB_EMAIL et FB_PASSWORD requis pour LOGIN_METHOD=credentials');
+            }
+            this.log('info', `Email configuré: ${CONFIG.FB_EMAIL.substring(0, 3)}***`);
+        } else {
+            if (!fsSync.existsSync(CONFIG.APPSTATE_FILE)) {
+                throw new Error(`Fichier ${CONFIG.APPSTATE_FILE} manquant pour LOGIN_METHOD=appstate`);
+            }
+            this.log('info', 'Fichier appstate trouvé');
         }
     }
 
-    // Démarrage avec retry automatique
+    // Démarrage avec retry
     async start() {
         try {
-            // Valider la configuration
             this.validateLoginConfig();
         } catch (error) {
             this.log('error', 'Configuration invalide:', error.message);
@@ -471,114 +365,73 @@ class FacebookBot extends EventEmitter {
                 // Charger les commandes
                 await this.loadCommands(true);
                 
-                // Démarrer l'écoute avec gestion d'erreurs améliorée
+                // Démarrer l'écoute
                 this.startListening();
                 
                 // Démarrer le serveur HTTP
                 this.startHttpServer();
                 
-                this.retryCount = 0; // Reset sur succès
+                this.retryCount = 0;
                 return;
 
             } catch (error) {
                 this.retryCount++;
                 this.log('error', `Échec connexion (${this.retryCount}/${CONFIG.MAX_RETRIES}):`, error.message);
                 
-                // Suggérer une solution basée sur l'erreur
-                if (error.error === 'login-approval' || error.error === 'checkpoint') {
-                    this.log('info', '💡 Solution suggérée: Essayez de changer LOGIN_METHOD dans votre .env');
-                }
-                
                 if (this.retryCount < CONFIG.MAX_RETRIES) {
                     this.log('info', `Nouvelle tentative dans ${CONFIG.RETRY_DELAY/1000}s...`);
                     await new Promise(resolve => setTimeout(resolve, CONFIG.RETRY_DELAY));
                 } else {
                     this.log('error', 'Nombre maximum de tentatives atteint');
-                    this.log('info', '💡 Vérifiez votre configuration dans le fichier .env');
                     process.exit(1);
                 }
             }
         }
     }
 
-    // Écoute des messages avec gestion d'erreurs robuste
+    // Écoute des messages avec technique ntkhang (listenMqtt)
     startListening() {
-        this.listenLoopActive = true;
-
-        const listenWithRetry = () => {
-            if (!this.listenLoopActive || this.isShuttingDown) return;
-
-            try {
-                this.api.listenMqtt((err, message) => {
-                    if (err) {
-                        this.log('error', 'Erreur écoute MQTT:', err.message);
+        try {
+            // Utiliser listenMqtt au lieu de listen (technique ntkhang)
+            this.stopListening = this.api.listenMqtt((err, event) => {
+                if (err) {
+                    this.log('error', 'Erreur écoute MQTT:', err.message);
+                    
+                    // Gestion spécifique de l'erreur successful_results
+                    if (err.message && err.message.includes('successful_results')) {
+                        this.log('warn', 'Erreur successful_results détectée - tentative de récupération');
                         
-                        // Gestion spécifique de l'erreur successful_results
-                        if (err.message && err.message.includes('successful_results')) {
-                            this.log('warn', 'Erreur successful_results détectée - tentative de récupération');
-                            // Redémarrer l'écoute après un délai
-                            setTimeout(listenWithRetry, 2000);
-                            return;
-                        }
-                        
-                        // Redémarrage automatique en cas d'erreur critique
-                        if (err.error === 'Connection closed.' || err.message.includes('Connection closed')) {
-                            this.log('info', 'Connexion fermée - Reconnexion automatique...');
-                            setTimeout(() => {
-                                if (!this.isShuttingDown) {
-                                    this.start();
-                                }
-                            }, 5000);
-                            return;
-                        }
-
-                        // Pour les autres erreurs, essayer de continuer l'écoute
-                        setTimeout(listenWithRetry, 3000);
+                        // Redémarrer l'écoute après un délai
+                        setTimeout(() => {
+                            this.log('info', 'Redémarrage de l\'écoute...');
+                            this.startListening();
+                        }, 3000);
                         return;
                     }
-
-                    if (message) {
-                        this.handleMessage(message);
+                    
+                    // Redémarrage automatique pour autres erreurs critiques
+                    if (err.error === 'Connection closed.' || err.message.includes('Connection closed')) {
+                        this.log('info', 'Reconnexion automatique...');
+                        setTimeout(() => this.start(), 5000);
                     }
-                });
-            } catch (error) {
-                this.log('error', 'Erreur lors de l\'initialisation de l\'écoute:', error.message);
-                setTimeout(listenWithRetry, 5000);
-            }
-        };
+                    return;
+                }
 
-        // Démarrer l'écoute
-        listenWithRetry();
+                // Traiter l'événement
+                this.handleMessage(event);
+            });
 
-        this.log('info', '🤖 Bot démarré et en écoute...');
-        this.log('info', `💬 Préfixe: ${CONFIG.COMMAND_PREFIX}`);
-        this.log('info', `🔐 Méthode de connexion: ${CONFIG.LOGIN_METHOD}`);
-        
-        // Test de fonctionnement - envoyer un message de test à soi-même
-        setTimeout(() => {
-            this.testBotFunctionality();
-        }, 3000);
-    }
-
-    // Test de fonctionnalité du bot
-    async testBotFunctionality() {
-        try {
-            const currentUserID = this.api.getCurrentUserID();
-            this.log('info', `ID utilisateur du bot: ${currentUserID}`);
+            this.log('info', '🤖 Bot démarré et en écoute...');
+            this.log('info', `💬 Préfixe: ${CONFIG.COMMAND_PREFIX}`);
+            this.log('info', `🔐 Méthode: ${CONFIG.LOGIN_METHOD}`);
             
-            // Essayer d'obtenir les infos de l'utilisateur courant
-            const userInfo = await this.getUserInfo(currentUserID);
-            if (userInfo) {
-                this.log('info', `Bot connecté en tant que: ${userInfo.name}`);
-            }
-            
-            this.log('info', '✅ Bot prêt à recevoir des commandes!');
         } catch (error) {
-            this.log('error', 'Erreur test fonctionnalité:', error.message);
+            this.log('error', 'Erreur startListening:', error.message);
+            setTimeout(() => this.start(), 5000);
         }
     }
 
-    // Serveur HTTP pour le monitoring
+    // Serveur HTTP pour monitoring
     startHttpServer() {
         this.server = http.createServer((req, res) => {
             res.writeHead(200, { 
@@ -594,7 +447,7 @@ class FacebookBot extends EventEmitter {
                 retryCount: this.retryCount,
                 loginMethod: CONFIG.LOGIN_METHOD,
                 memory: process.memoryUsage(),
-                listenActive: this.listenLoopActive
+                api_connected: this.api ? true : false
             };
             
             res.end(JSON.stringify(status, null, 2));
@@ -604,7 +457,6 @@ class FacebookBot extends EventEmitter {
             this.log('info', `🌐 Serveur HTTP sur port ${CONFIG.PORT}`);
         });
 
-        // Gestion des erreurs serveur
         this.server.on('error', (error) => {
             this.log('error', 'Erreur serveur HTTP:', error.message);
         });
@@ -615,10 +467,13 @@ class FacebookBot extends EventEmitter {
         if (this.isShuttingDown) return;
         
         this.isShuttingDown = true;
-        this.listenLoopActive = false;
         this.log('info', '🛑 Arrêt du bot...');
 
         try {
+            if (this.stopListening) {
+                this.stopListening();
+            }
+            
             if (this.server) {
                 this.server.close();
             }
@@ -635,14 +490,14 @@ class FacebookBot extends EventEmitter {
     }
 }
 
-// Initialisation et démarrage
+// Initialisation
 const bot = new FacebookBot();
 
-// Gestion des signaux système
+// Gestion des signaux
 process.on('SIGINT', () => bot.shutdown());
 process.on('SIGTERM', () => bot.shutdown());
 
-// Gestion des erreurs non catchées
+// Gestion des erreurs
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection:', reason);
     bot.log('error', 'Unhandled Rejection:', reason);
@@ -654,7 +509,7 @@ process.on('uncaughtException', (error) => {
     bot.shutdown();
 });
 
-// Démarrage du bot
+// Démarrage
 bot.start().catch((error) => {
     console.error('Erreur fatale au démarrage:', error);
     process.exit(1);
