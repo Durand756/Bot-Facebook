@@ -1,4 +1,4 @@
-const login = require('fb-chat-api'); // Utilisez 'fb-chat-api' de ntkhang
+const login = require('fca-unofficial'); // Remplacé fb-chat-api par fca-unofficial
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
@@ -10,13 +10,13 @@ require('dotenv').config();
 const CONFIG = {
     COMMAND_PREFIX: process.env.COMMAND_PREFIX || '/',
     COMMANDS_DIR: path.join(__dirname, 'Commandes'),
-    APPSTATE_FILE: 'appstate.json', // Changé de cookies.json à appstate.json
+    APPSTATE_FILE: 'appstate.json',
     LOGS_FILE: 'logs.txt',
     PORT: process.env.PORT || 3000,
     MAX_RETRIES: 3,
     RETRY_DELAY: 5000,
     LOG_LEVEL: process.env.LOG_LEVEL || 'info',
-    // Options de connexion adaptées à ntkhang
+    // Options de connexion adaptées à fca-unofficial
     LOGIN_METHOD: process.env.LOGIN_METHOD || 'appstate',
     FB_EMAIL: process.env.FB_EMAIL || '',
     FB_PASSWORD: process.env.FB_PASSWORD || '',
@@ -59,7 +59,7 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Chargement de l'appstate (technique ntkhang)
+    // Chargement de l'appstate optimisé pour fca-unofficial
     async loadAppState() {
         try {
             if (!fsSync.existsSync(CONFIG.APPSTATE_FILE)) {
@@ -74,13 +74,13 @@ class FacebookBot extends EventEmitter {
                 throw new Error('Format appstate invalide');
             }
 
-            // Vérifier les cookies critiques
-            const criticalCookies = ['c_user', 'xs', 'datr', 'fr'];
+            // Vérifier les cookies critiques pour fca-unofficial
+            const criticalCookies = ['c_user', 'xs', 'datr', 'fr', 'sb'];
             const presentCritical = criticalCookies.filter(name => 
                 appState.some(cookie => cookie.key === name || cookie.name === name)
             );
 
-            if (presentCritical.length < 2) {
+            if (presentCritical.length < 3) {
                 throw new Error(`Cookies critiques manquants. Présents: ${presentCritical.join(', ')}`);
             }
 
@@ -158,7 +158,7 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Gestionnaire de messages amélioré selon ntkhang
+    // Gestionnaire de messages optimisé pour fca-unofficial
     async handleMessage(event) {
         try {
             // Vérifier le type d'événement
@@ -180,10 +180,12 @@ class FacebookBot extends EventEmitter {
             
             if (!commandName) return;
 
-            // Marquer comme lu
-            this.api.markAsRead(event.threadID, (err) => {
-                if (err) this.log('warn', 'Erreur markAsRead:', err.message);
-            });
+            // Marquer comme lu (avec gestion d'erreur améliorée)
+            try {
+                await this.markAsRead(event.threadID);
+            } catch (error) {
+                this.log('warn', 'Erreur markAsRead:', error.message);
+            }
 
             // Recharger les commandes si nécessaire
             await this.loadCommands();
@@ -207,7 +209,7 @@ class FacebookBot extends EventEmitter {
 
             this.log('info', `Exécution: ${commandName} par ${senderName}`);
 
-            // Exécuter la commande
+            // Exécuter la commande avec timeout
             const command = this.commands.get(commandName);
             await Promise.race([
                 command(args, this.api, event),
@@ -225,6 +227,19 @@ class FacebookBot extends EventEmitter {
                 ).catch(() => {});
             }
         }
+    }
+
+    // Wrapper pour markAsRead avec Promise
+    async markAsRead(threadID) {
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error('Timeout markAsRead')), 5000);
+            
+            this.api.markAsRead(threadID, (err) => {
+                clearTimeout(timeout);
+                if (err) reject(err);
+                else resolve();
+            });
+        });
     }
 
     // Wrapper sécurisé pour getUserInfo
@@ -256,48 +271,53 @@ class FacebookBot extends EventEmitter {
         });
     }
 
-    // Connexion avec technique ntkhang
+    // Connexion optimisée pour fca-unofficial
     async connect() {
         try {
-            let loginOptions = {};
+            let loginCredentials = {};
 
             if (CONFIG.LOGIN_METHOD === 'credentials' && CONFIG.FB_EMAIL && CONFIG.FB_PASSWORD) {
                 this.log('info', 'Tentative de connexion avec email/mot de passe');
-                loginOptions = {
+                loginCredentials = {
                     email: CONFIG.FB_EMAIL,
                     password: CONFIG.FB_PASSWORD
                 };
             } else {
                 this.log('info', 'Tentative de connexion avec appstate');
                 const appState = await this.loadAppState();
-                loginOptions = {
+                loginCredentials = {
                     appState: appState
                 };
             }
 
-            // Options de connexion selon ntkhang
-            const connectionOptions = {
+            // Options de connexion optimisées pour fca-unofficial
+            const loginOptions = {
                 listenEvents: true,
                 logLevel: 'silent',
                 updatePresence: false,
                 selfListen: false,
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                forceLogin: true,
+                autoMarkDelivery: false,
+                autoMarkRead: false,
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
             };
 
             if (CONFIG.PAGE_ID) {
-                connectionOptions.pageID = CONFIG.PAGE_ID;
+                loginOptions.pageID = CONFIG.PAGE_ID;
             }
 
             return new Promise((resolve, reject) => {
-                login(loginOptions, connectionOptions, (err, api) => {
+                login(loginCredentials, loginOptions, (err, api) => {
                     if (err) {
                         this.log('error', 'Erreur connexion:', err.message || err.error);
                         
-                        // Messages d'erreur spécifiques
+                        // Messages d'erreur spécifiques pour fca-unofficial
                         if (err.error === 'login-approval') {
-                            this.log('error', 'Approbation de connexion requise');
+                            this.log('error', 'Approbation de connexion requise - Vérifiez votre email/SMS');
                         } else if (err.error === 'checkpoint') {
-                            this.log('error', 'Checkpoint de sécurité détecté');
+                            this.log('error', 'Checkpoint de sécurité détecté - Connexion via navigateur requise');
+                        } else if (err.error === 'Wrong username/password.') {
+                            this.log('error', 'Email ou mot de passe incorrect');
                         }
                         
                         reject(err);
@@ -306,7 +326,7 @@ class FacebookBot extends EventEmitter {
 
                     this.api = api;
                     
-                    // Configuration de l'API selon ntkhang
+                    // Configuration de l'API pour fca-unofficial
                     api.setOptions({
                         listenEvents: true,
                         logLevel: 'silent',
@@ -360,7 +380,7 @@ class FacebookBot extends EventEmitter {
                 this.log('info', `Tentative de connexion ${this.retryCount + 1}/${CONFIG.MAX_RETRIES}`);
                 
                 await this.connect();
-                this.log('info', '✅ Connexion réussie!');
+                this.log('info', '✅ Connexion réussie avec fca-unofficial!');
                 
                 // Charger les commandes
                 await this.loadCommands(true);
@@ -389,30 +409,21 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Écoute des messages avec technique ntkhang (listenMqtt)
+    // Écoute des messages optimisée pour fca-unofficial
     startListening() {
         try {
-            // Utiliser listenMqtt au lieu de listen (technique ntkhang)
-            this.stopListening = this.api.listenMqtt((err, event) => {
+            // fca-unofficial utilise la méthode listen standard
+            this.stopListening = this.api.listen((err, event) => {
                 if (err) {
-                    this.log('error', 'Erreur écoute MQTT:', err.message);
+                    this.log('error', 'Erreur écoute:', err.message);
                     
-                    // Gestion spécifique de l'erreur successful_results
-                    if (err.message && err.message.includes('successful_results')) {
-                        this.log('warn', 'Erreur successful_results détectée - tentative de récupération');
-                        
-                        // Redémarrer l'écoute après un délai
-                        setTimeout(() => {
-                            this.log('info', 'Redémarrage de l\'écoute...');
-                            this.startListening();
-                        }, 3000);
-                        return;
-                    }
-                    
-                    // Redémarrage automatique pour autres erreurs critiques
+                    // Gestion des erreurs spécifiques à fca-unofficial
                     if (err.error === 'Connection closed.' || err.message.includes('Connection closed')) {
-                        this.log('info', 'Reconnexion automatique...');
+                        this.log('info', 'Connexion fermée - Reconnexion automatique...');
                         setTimeout(() => this.start(), 5000);
+                    } else if (err.message && err.message.includes('Not logged in')) {
+                        this.log('error', 'Session expirée - Redémarrage requis');
+                        setTimeout(() => this.start(), 3000);
                     }
                     return;
                 }
@@ -421,7 +432,7 @@ class FacebookBot extends EventEmitter {
                 this.handleMessage(event);
             });
 
-            this.log('info', '🤖 Bot démarré et en écoute...');
+            this.log('info', '🤖 Bot démarré avec fca-unofficial et en écoute...');
             this.log('info', `💬 Préfixe: ${CONFIG.COMMAND_PREFIX}`);
             this.log('info', `🔐 Méthode: ${CONFIG.LOGIN_METHOD}`);
             
@@ -440,14 +451,15 @@ class FacebookBot extends EventEmitter {
             });
             
             const status = {
-                status: 'Bot Facebook Messenger actif',
+                status: 'Bot Facebook Messenger actif (fca-unofficial)',
                 timestamp: new Date().toISOString(),
                 uptime: process.uptime(),
                 commands: this.commands.size,
                 retryCount: this.retryCount,
                 loginMethod: CONFIG.LOGIN_METHOD,
                 memory: process.memoryUsage(),
-                api_connected: this.api ? true : false
+                api_connected: this.api ? true : false,
+                library: 'fca-unofficial'
             };
             
             res.end(JSON.stringify(status, null, 2));
