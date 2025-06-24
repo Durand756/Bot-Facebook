@@ -6,7 +6,7 @@ const http = require('http');
 const { EventEmitter } = require('events');
 require('dotenv').config();
 
-// Configuration avec validation 
+// Configuration avec validation
 const CONFIG = {
     COMMAND_PREFIX: process.env.COMMAND_PREFIX || '/',
     COMMANDS_DIR: path.join(__dirname, 'Commandes'),
@@ -17,7 +17,7 @@ const CONFIG = {
     RETRY_DELAY: 5000,
     LOG_LEVEL: process.env.LOG_LEVEL || 'info',
     // Nouvelles options de connexion
-    LOGIN_METHOD: process.env.LOGIN_METHOD || 'cookies',
+    LOGIN_METHOD: process.env.LOGIN_METHOD || 'cookies', // 'cookies', 'email', 'phone'
     FB_EMAIL: process.env.FB_EMAIL || '',
     FB_PASSWORD: process.env.FB_PASSWORD || '',
     FB_PHONE: process.env.FB_PHONE || ''
@@ -32,7 +32,7 @@ class FacebookBot extends EventEmitter {
         this.isShuttingDown = false;
         this.server = null;
         this.commandsLastLoaded = 0;
-        this.listenStopCallback = null;
+        this.listenLoopActive = false;
     }
 
     // Logger amélioré avec niveaux
@@ -204,24 +204,38 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Gestionnaire de messages optimisé
+    // Gestionnaire de messages optimisé avec debugging
     async handleMessage(message) {
         try {
-            // Validation message plus robuste
-            if (!message || 
-                typeof message !== 'object' ||
-                !message.body || 
+            // Debug: afficher le message reçu
+            this.log('debug', 'Message reçu:', {
+                type: message.type,
+                body: message.body,
+                senderID: message.senderID,
+                threadID: message.threadID
+            });
+
+            // Ignorer ses propres messages et messages système
+            if (!message.body || 
                 message.senderID === this.api.getCurrentUserID() ||
                 message.type !== 'message') {
+                this.log('debug', 'Message ignoré (propre message ou système)');
                 return;
             }
 
             const messageBody = message.body.trim();
-            if (!messageBody.startsWith(CONFIG.COMMAND_PREFIX)) return;
+            this.log('debug', `Message traité: "${messageBody}"`);
+            
+            if (!messageBody.startsWith(CONFIG.COMMAND_PREFIX)) {
+                this.log('debug', `Pas une commande (préfixe: ${CONFIG.COMMAND_PREFIX})`);
+                return;
+            }
 
             // Parser la commande
             const args = messageBody.slice(CONFIG.COMMAND_PREFIX.length).trim().split(/\s+/);
             const commandName = args.shift()?.toLowerCase();
+            
+            this.log('debug', `Commande parsée: ${commandName}, args: [${args.join(', ')}]`);
             
             if (!commandName) return;
 
@@ -230,6 +244,7 @@ class FacebookBot extends EventEmitter {
 
             // Vérifier l'existence de la commande
             if (!this.commands.has(commandName)) {
+                this.log('debug', `Commande ${commandName} non trouvée`);
                 await this.sendMessage(
                     `❌ Commande "${commandName}" introuvable. Tapez ${CONFIG.COMMAND_PREFIX}help pour voir les commandes disponibles.`,
                     message.threadID
@@ -256,9 +271,11 @@ class FacebookBot extends EventEmitter {
                 )
             ]);
 
+            this.log('info', `Commande ${commandName} exécutée avec succès`);
+
         } catch (error) {
             this.log('error', 'Erreur handleMessage:', error.message);
-            if (message && message.threadID) {
+            if (message.threadID) {
                 await this.sendMessage(
                     `❌ Erreur lors de l'exécution: ${error.message}`,
                     message.threadID
@@ -290,8 +307,13 @@ class FacebookBot extends EventEmitter {
             
             this.api.sendMessage(message, threadID, (err, messageInfo) => {
                 clearTimeout(timeout);
-                if (err) reject(err);
-                else resolve(messageInfo);
+                if (err) {
+                    this.log('error', 'Erreur envoi message:', err.message);
+                    reject(err);
+                } else {
+                    this.log('debug', 'Message envoyé avec succès');
+                    resolve(messageInfo);
+                }
             });
         });
     }
@@ -355,7 +377,7 @@ class FacebookBot extends EventEmitter {
             return new Promise((resolve, reject) => {
                 login(options, (err, api) => {
                     if (err) {
-                        this.log('error', 'Erreur connexion:', err.message);
+                        this.log('error', 'Erreur connexion:', err);
                         
                         // Messages d'erreur plus explicites
                         if (err.error === 'login-approval') {
@@ -449,7 +471,7 @@ class FacebookBot extends EventEmitter {
                 // Charger les commandes
                 await this.loadCommands(true);
                 
-                // Démarrer l'écoute
+                // Démarrer l'écoute avec gestion d'erreurs améliorée
                 this.startListening();
                 
                 // Démarrer le serveur HTTP
@@ -479,77 +501,80 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Écoute des messages avec gestion d'erreurs AMÉLIORÉE
+    // Écoute des messages avec gestion d'erreurs robuste
     startListening() {
-        // Arrêter l'écoute précédente si elle existe
-        if (this.listenStopCallback) {
+        this.listenLoopActive = true;
+
+        const listenWithRetry = () => {
+            if (!this.listenLoopActive || this.isShuttingDown) return;
+
             try {
-                this.listenStopCallback();
-            } catch (error) {
-                this.log('warn', 'Erreur arrêt écoute précédente:', error.message);
-            }
-        }
-
-        // Démarrer l'écoute avec gestion d'erreur robuste
-        this.listenStopCallback = this.api.listenMqtt((err, message) => {
-            if (err) {
-                this.log('error', 'Erreur écoute MQTT:', err.message);
-                
-                // Gestion spécifique de l'erreur successful_results
-                if (err.message && err.message.includes('successful_results')) {
-                    this.log('warn', 'Erreur successful_results détectée - tentative de récupération...');
-                    
-                    // Attendre un peu avant de redémarrer l'écoute
-                    setTimeout(() => {
-                        if (!this.isShuttingDown) {
-                            this.log('info', 'Redémarrage de l\'écoute MQTT...');
-                            this.startListening();
+                this.api.listenMqtt((err, message) => {
+                    if (err) {
+                        this.log('error', 'Erreur écoute MQTT:', err.message);
+                        
+                        // Gestion spécifique de l'erreur successful_results
+                        if (err.message && err.message.includes('successful_results')) {
+                            this.log('warn', 'Erreur successful_results détectée - tentative de récupération');
+                            // Redémarrer l'écoute après un délai
+                            setTimeout(listenWithRetry, 2000);
+                            return;
                         }
-                    }, 3000);
-                    return;
-                }
-                
-                // Redémarrage automatique en cas d'erreur critique
-                if (err.error === 'Connection closed.' || err.message.includes('ECONNRESET')) {
-                    this.log('info', 'Connexion fermée - reconnexion automatique...');
-                    setTimeout(() => {
-                        if (!this.isShuttingDown) {
-                            this.start();
+                        
+                        // Redémarrage automatique en cas d'erreur critique
+                        if (err.error === 'Connection closed.' || err.message.includes('Connection closed')) {
+                            this.log('info', 'Connexion fermée - Reconnexion automatique...');
+                            setTimeout(() => {
+                                if (!this.isShuttingDown) {
+                                    this.start();
+                                }
+                            }, 5000);
+                            return;
                         }
-                    }, 5000);
-                    return;
-                }
 
-                // Pour d'autres erreurs, continuer l'écoute après un délai
-                setTimeout(() => {
-                    if (!this.isShuttingDown) {
-                        this.startListening();
+                        // Pour les autres erreurs, essayer de continuer l'écoute
+                        setTimeout(listenWithRetry, 3000);
+                        return;
                     }
-                }, 2000);
-                
-                return;
-            }
 
-            // Traitement du message avec validation supplémentaire
-            if (message && typeof message === 'object') {
-                this.handleMessage(message).catch(error => {
-                    this.log('error', 'Erreur traitement message:', error.message);
+                    if (message) {
+                        this.handleMessage(message);
+                    }
                 });
+            } catch (error) {
+                this.log('error', 'Erreur lors de l\'initialisation de l\'écoute:', error.message);
+                setTimeout(listenWithRetry, 5000);
             }
-        });
+        };
+
+        // Démarrer l'écoute
+        listenWithRetry();
 
         this.log('info', '🤖 Bot démarré et en écoute...');
         this.log('info', `💬 Préfixe: ${CONFIG.COMMAND_PREFIX}`);
         this.log('info', `🔐 Méthode de connexion: ${CONFIG.LOGIN_METHOD}`);
         
-        // Test de fonctionnement - envoyer un message de test si défini
-        if (process.env.TEST_THREAD_ID) {
-            this.sendMessage(
-                `🤖 Bot redémarré avec succès à ${new Date().toLocaleString()}`, 
-                process.env.TEST_THREAD_ID
-            ).catch(error => {
-                this.log('warn', 'Impossible d\'envoyer le message de test:', error.message);
-            });
+        // Test de fonctionnement - envoyer un message de test à soi-même
+        setTimeout(() => {
+            this.testBotFunctionality();
+        }, 3000);
+    }
+
+    // Test de fonctionnalité du bot
+    async testBotFunctionality() {
+        try {
+            const currentUserID = this.api.getCurrentUserID();
+            this.log('info', `ID utilisateur du bot: ${currentUserID}`);
+            
+            // Essayer d'obtenir les infos de l'utilisateur courant
+            const userInfo = await this.getUserInfo(currentUserID);
+            if (userInfo) {
+                this.log('info', `Bot connecté en tant que: ${userInfo.name}`);
+            }
+            
+            this.log('info', '✅ Bot prêt à recevoir des commandes!');
+        } catch (error) {
+            this.log('error', 'Erreur test fonctionnalité:', error.message);
         }
     }
 
@@ -569,8 +594,7 @@ class FacebookBot extends EventEmitter {
                 retryCount: this.retryCount,
                 loginMethod: CONFIG.LOGIN_METHOD,
                 memory: process.memoryUsage(),
-                listening: !!this.listenStopCallback,
-                connected: !!this.api
+                listenActive: this.listenLoopActive
             };
             
             res.end(JSON.stringify(status, null, 2));
@@ -591,21 +615,14 @@ class FacebookBot extends EventEmitter {
         if (this.isShuttingDown) return;
         
         this.isShuttingDown = true;
+        this.listenLoopActive = false;
         this.log('info', '🛑 Arrêt du bot...');
 
         try {
-            // Arrêter l'écoute
-            if (this.listenStopCallback) {
-                this.listenStopCallback();
-                this.listenStopCallback = null;
-            }
-
-            // Fermer le serveur
             if (this.server) {
                 this.server.close();
             }
             
-            // Déconnexion API
             if (this.api) {
                 this.api.logout?.();
             }
