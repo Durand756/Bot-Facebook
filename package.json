@@ -1,19 +1,16 @@
 {
   "name": "facebook-messenger-bot",
   "version": "2.0.0",
-  "description": "Bot Facebook Messenger - Solutions alternatives",
+  "description": "Bot Facebook Messenger avec fca-unofficial",
   "main": "Durand-bot-Fb-V1.js",
   "scripts": {
     "start": "node Durand-bot-Fb-V1.js",
     "dev": "nodemon Durand-bot-Fb-V1.js",
-    "clean": "rm -rf node_modules package-lock.json",
-    "install-solution1": "npm install @xaviabot/fca-unofficial",
-    "install-solution2": "npm install @huudann/fca-unofficial",
-    "install-solution3": "npm install fca-unofficial@latest",
-    "install-solution4": "npm install github:XaviaTeam/fca-unofficial",
-    "install-solution5": "npm install github:Schmavery/facebook-chat-api"
+    "clean": "rm -rf node_modules package-lock.json && npm install",
+    "test": "echo \"No tests specified\" && exit 0"
   },
   "dependencies": {
+    "fca-unofficial": "^1.3.16",
     "dotenv": "^16.4.5",
     "axios": "^1.6.0",
     "fs-extra": "^11.2.0"
@@ -26,7 +23,8 @@
     "messenger",
     "bot",
     "chat",
-    "api"
+    "api",
+    "fca-unofficial"
   ],
   "author": "Votre nom",
   "license": "MIT",
