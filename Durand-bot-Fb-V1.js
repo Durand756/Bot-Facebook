@@ -1,4 +1,4 @@
-const login = require('fca-unofficial'); // Changé de 'fb-chat-api' vers 'fca-unofficial'
+const login = require('facebook-chat-api'); // Package principal facebook-chat-api
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
