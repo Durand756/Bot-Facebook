@@ -58,7 +58,52 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Chargement de l'appstate
+    // Normalisation et validation de l'appstate
+    normalizeAppState(appState) {
+        if (!Array.isArray(appState)) {
+            throw new Error('AppState doit être un tableau');
+        }
+
+        return appState.map(cookie => {
+            // Normaliser la structure du cookie
+            const normalizedCookie = {
+                key: cookie.key || cookie.name,
+                value: cookie.value,
+                domain: cookie.domain,
+                path: cookie.path || '/',
+                hostOnly: cookie.hostOnly || false,
+                creation: cookie.creation || new Date().toISOString(),
+                lastAccessed: cookie.lastAccessed || new Date().toISOString()
+            };
+
+            // Correction spécifique pour les domaines Facebook
+            if (normalizedCookie.domain) {
+                // Normaliser les domaines Facebook
+                if (normalizedCookie.domain === '.facebook.com' || 
+                    normalizedCookie.domain === 'facebook.com' ||
+                    normalizedCookie.domain === 'www.facebook.com') {
+                    normalizedCookie.domain = '.facebook.com';
+                }
+                // Ajouter des cookies pour messenger.com si nécessaire
+                if (normalizedCookie.domain === '.facebook.com') {
+                    // Certains cookies doivent être dupliqués pour messenger.com
+                    const messengerCompatible = ['datr', 'fr', 'sb', 'c_user', 'xs'];
+                    if (messengerCompatible.includes(normalizedCookie.key)) {
+                        // Créer une copie pour messenger.com
+                        const messengerCookie = {
+                            ...normalizedCookie,
+                            domain: '.messenger.com'
+                        };
+                        return [normalizedCookie, messengerCookie];
+                    }
+                }
+            }
+
+            return normalizedCookie;
+        }).flat(); // Aplatir le tableau pour inclure les cookies dupliqués
+    }
+
+    // Chargement de l'appstate avec correction
     async loadAppState() {
         try {
             if (!fsSync.existsSync(CONFIG.APPSTATE_FILE)) {
@@ -68,23 +113,29 @@ class FacebookBot extends EventEmitter {
             const appStateData = await fs.readFile(CONFIG.APPSTATE_FILE, 'utf8');
             let appState = JSON.parse(appStateData);
 
+            // Normaliser l'appstate
+            appState = this.normalizeAppState(appState);
+
             // Validation de l'appstate
             if (!Array.isArray(appState) || appState.length === 0) {
-                throw new Error('Format appstate invalide');
+                throw new Error('Format appstate invalide après normalisation');
             }
 
             // Vérifier les cookies critiques
             const criticalCookies = ['c_user', 'xs', 'datr', 'fr'];
             const presentCritical = criticalCookies.filter(name => 
-                appState.some(cookie => cookie.key === name || cookie.name === name)
+                appState.some(cookie => (cookie.key === name || cookie.name === name))
             );
 
             if (presentCritical.length < 2) {
                 throw new Error(`Cookies critiques manquants. Présents: ${presentCritical.join(', ')}`);
             }
 
-            this.log('info', `AppState chargé avec ${appState.length} cookies`);
+            this.log('info', `AppState normalisé avec ${appState.length} cookies`);
             this.log('info', `Cookies critiques: ${presentCritical.join(', ')}`);
+            
+            // Sauvegarder l'appstate normalisé
+            await this.saveAppState(appState);
             
             return appState;
 
@@ -255,7 +306,7 @@ class FacebookBot extends EventEmitter {
         });
     }
 
-    // Connexion
+    // Connexion avec options améliorées
     async connect() {
         try {
             let loginOptions = {};
@@ -274,14 +325,20 @@ class FacebookBot extends EventEmitter {
                 };
             }
 
-            // Options de connexion
+            // Options de connexion optimisées pour éviter les erreurs de domaine
             const connectionOptions = {
                 listenEvents: true,
                 logLevel: 'silent',
                 updatePresence: false,
                 selfListen: false,
                 forceLogin: true,
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                autoMarkDelivery: false,
+                autoMarkRead: false,
+                listenTyping: false,
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                // Options spécifiques pour éviter les conflits de cookies
+                online: false,
+                emitReady: false
             };
 
             if (CONFIG.PAGE_ID) {
@@ -289,7 +346,13 @@ class FacebookBot extends EventEmitter {
             }
 
             return new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('Timeout de connexion (60s)'));
+                }, 60000);
+
                 login(loginOptions, connectionOptions, (err, api) => {
+                    clearTimeout(timeout);
+                    
                     if (err) {
                         this.log('error', 'Erreur connexion:', err.message || err.error);
                         
@@ -298,6 +361,15 @@ class FacebookBot extends EventEmitter {
                             this.log('error', 'Approbation de connexion requise');
                         } else if (err.error === 'checkpoint') {
                             this.log('error', 'Checkpoint de sécurité détecté');
+                        } else if (err.message && err.message.includes('Cookie not in this host\'s domain')) {
+                            this.log('error', 'Erreur de domaine de cookies - tentative de correction');
+                            // Essayer de nettoyer et recréer l'appstate
+                            this.cleanAppState().then(() => {
+                                reject(new Error('AppState nettoyé, veuillez relancer'));
+                            }).catch(() => {
+                                reject(err);
+                            });
+                            return;
                         }
                         
                         reject(err);
@@ -314,12 +386,14 @@ class FacebookBot extends EventEmitter {
                         selfListen: false,
                         forceLogin: true,
                         autoMarkDelivery: false,
-                        autoMarkRead: false
+                        autoMarkRead: false,
+                        online: false
                     });
 
                     // Sauvegarder l'appstate après connexion réussie
-                    if (CONFIG.LOGIN_METHOD === 'credentials' && api.getAppState) {
-                        this.saveAppState(api.getAppState());
+                    if (api.getAppState) {
+                        const newAppState = this.normalizeAppState(api.getAppState());
+                        this.saveAppState(newAppState);
                     }
 
                     resolve(api);
@@ -328,6 +402,25 @@ class FacebookBot extends EventEmitter {
 
         } catch (error) {
             throw error;
+        }
+    }
+
+    // Nettoyage de l'appstate en cas d'erreur de cookies
+    async cleanAppState() {
+        try {
+            this.log('info', 'Nettoyage de l\'appstate...');
+            
+            if (fsSync.existsSync(CONFIG.APPSTATE_FILE)) {
+                const backupFile = `${CONFIG.APPSTATE_FILE}.backup.${Date.now()}`;
+                await fs.copyFile(CONFIG.APPSTATE_FILE, backupFile);
+                this.log('info', `Sauvegarde créée: ${backupFile}`);
+                
+                // Supprimer l'appstate corrompu
+                await fs.unlink(CONFIG.APPSTATE_FILE);
+                this.log('info', 'AppState corrompu supprimé');
+            }
+        } catch (error) {
+            this.log('error', 'Erreur nettoyage appstate:', error.message);
         }
     }
 
@@ -346,7 +439,7 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Démarrage avec retry
+    // Démarrage avec retry amélioré
     async start() {
         try {
             this.validateLoginConfig();
@@ -383,13 +476,21 @@ class FacebookBot extends EventEmitter {
                     await new Promise(resolve => setTimeout(resolve, CONFIG.RETRY_DELAY));
                 } else {
                     this.log('error', 'Nombre maximum de tentatives atteint');
+                    
+                    // Dernière tentative de nettoyage avant abandon
+                    if (error.message.includes('Cookie') || error.message.includes('domain')) {
+                        this.log('info', 'Tentative de nettoyage final de l\'appstate...');
+                        await this.cleanAppState();
+                        this.log('error', 'Veuillez vous reconnecter à Facebook et générer un nouvel appstate');
+                    }
+                    
                     process.exit(1);
                 }
             }
         }
     }
 
-    // Écoute des messages
+    // Écoute des messages avec gestion d'erreurs améliorée
     startListening() {
         try {
             // Utiliser listen ou listenMqtt selon la disponibilité
@@ -399,28 +500,48 @@ class FacebookBot extends EventEmitter {
                 if (err) {
                     this.log('error', 'Erreur écoute:', err.message);
                     
-                    // Gestion spécifique de l'erreur successful_results
+                    // Gestion spécifique des erreurs
                     if (err.message && err.message.includes('successful_results')) {
-                        this.log('warn', 'Erreur successful_results détectée - tentative de récupération');
-                        
-                        // Redémarrer l'écoute après un délai
+                        this.log('warn', 'Erreur successful_results détectée - redémarrage écoute');
                         setTimeout(() => {
-                            this.log('info', 'Redémarrage de l\'écoute...');
-                            this.startListening();
+                            if (!this.isShuttingDown) {
+                                this.log('info', 'Redémarrage de l\'écoute...');
+                                this.startListening();
+                            }
                         }, 3000);
                         return;
                     }
                     
-                    // Redémarrage automatique pour autres erreurs critiques
-                    if (err.error === 'Connection closed.' || err.message.includes('Connection closed')) {
-                        this.log('info', 'Reconnexion automatique...');
-                        setTimeout(() => this.start(), 5000);
+                    // Erreurs de connexion
+                    if (err.error === 'Connection closed.' || 
+                        err.message.includes('Connection closed') ||
+                        err.message.includes('ECONNRESET')) {
+                        this.log('info', 'Connexion fermée - reconnexion automatique...');
+                        setTimeout(() => {
+                            if (!this.isShuttingDown) {
+                                this.start();
+                            }
+                        }, 5000);
+                        return;
                     }
+
+                    // Erreurs de cookies/domaine
+                    if (err.message.includes('Cookie') || err.message.includes('domain')) {
+                        this.log('error', 'Erreur de cookies détectée pendant l\'écoute');
+                        this.cleanAppState().then(() => {
+                            this.log('error', 'AppState nettoyé - redémarrage requis');
+                            process.exit(1);
+                        });
+                        return;
+                    }
+                    
                     return;
                 }
 
                 // Traiter l'événement
-                this.handleMessage(event);
+                if (event) {
+                    this.handleMessage(event);
+                }
             });
 
             this.log('info', '🤖 Bot démarré et en écoute...');
@@ -429,7 +550,11 @@ class FacebookBot extends EventEmitter {
             
         } catch (error) {
             this.log('error', 'Erreur startListening:', error.message);
-            setTimeout(() => this.start(), 5000);
+            setTimeout(() => {
+                if (!this.isShuttingDown) {
+                    this.start();
+                }
+            }, 5000);
         }
     }
 
