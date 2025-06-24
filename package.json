@@ -1,26 +1,30 @@
 {
   "name": "facebook-messenger-bot",
-  "version": "1.0.0",
-  "description": "Bot Facebook Messenger avec commandes modulaires et intégration OpenAI",
+  "version": "2.0.0",
+  "description": "Bot Facebook Messenger utilisant la technique ntkhang",
   "main": "Durand-bot-Fb-V1.js",
   "scripts": {
     "start": "node Durand-bot-Fb-V1.js",
-    "dev": "nodemon Durand-bot-Fb-V1.js"
+    "dev": "nodemon Durand-bot-Fb-V1.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["facebook", "messenger", "bot", "openai", "chatbot"],
-  "author": "Durand Dev",
-  "license": "MIT",
   "dependencies": {
-    "facebook-chat-api": "^1.7.0",
-    "dotenv": "^16.3.1",
-    "axios": "^1.6.2",
-    "fs": "^0.0.1-security",
-    "path": "^0.12.7"
+    "fb-chat-api": "^10.4.19",
+    "dotenv": "^16.0.3"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "nodemon": "^2.0.22"
   },
+  "keywords": [
+    "facebook",
+    "messenger",
+    "bot",
+    "chat",
+    "api"
+  ],
+  "author": "Votre nom",
+  "license": "MIT",
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=14.0.0"
   }
 }
