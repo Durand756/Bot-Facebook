@@ -15,7 +15,12 @@ const CONFIG = {
     PORT: process.env.PORT || 3000,
     MAX_RETRIES: 3,
     RETRY_DELAY: 5000,
-    LOG_LEVEL: process.env.LOG_LEVEL || 'info'
+    LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+    // Nouvelles options de connexion
+    LOGIN_METHOD: process.env.LOGIN_METHOD || 'cookies', // 'cookies', 'email', 'phone'
+    FB_EMAIL: process.env.FB_EMAIL || '',
+    FB_PASSWORD: process.env.FB_PASSWORD || '',
+    FB_PHONE: process.env.FB_PHONE || ''
 };
 
 class FacebookBot extends EventEmitter {
@@ -54,7 +59,7 @@ class FacebookBot extends EventEmitter {
         }
     }
 
-    // Gestion sécurisée des cookies avec validation
+    // Gestion sécurisée des cookies avec validation améliorée
     async loadCookies() {
         try {
             if (!fsSync.existsSync(CONFIG.COOKIES_FILE)) {
@@ -62,37 +67,82 @@ class FacebookBot extends EventEmitter {
             }
 
             const cookiesData = await fs.readFile(CONFIG.COOKIES_FILE, 'utf8');
-            const cookies = JSON.parse(cookiesData);
+            let cookies = JSON.parse(cookiesData);
 
-            // Validation basique des cookies
+            // Validation et nettoyage des cookies
             if (!Array.isArray(cookies) || cookies.length === 0) {
                 throw new Error('Format de cookies invalide');
             }
 
-            // Nettoyer les cookies problématiques
-            const cleanedCookies = cookies.filter(cookie => {
-                if (!cookie.key || !cookie.value) return false;
-                
-                // Filtrer les cookies avec des domaines problématiques
-                if (cookie.domain && (
-                    cookie.domain.includes('messenger.com') || 
-                    cookie.domain.includes('facebook.com')
-                )) {
-                    // Normaliser le domaine
-                    if (cookie.domain.startsWith('.')) {
-                        cookie.domain = cookie.domain.substring(1);
+            // Normaliser le format des cookies
+            cookies = cookies.map(cookie => {
+                // Si le cookie utilise l'ancien format (name/value)
+                if (cookie.name && !cookie.key) {
+                    cookie.key = cookie.name;
+                }
+                if (cookie.value && typeof cookie.value === 'string') {
+                    // Décoder les valeurs URL encodées si nécessaire
+                    try {
+                        cookie.value = decodeURIComponent(cookie.value);
+                    } catch (e) {
+                        // Garder la valeur originale si le décodage échoue
                     }
                 }
-                
-                return true;
+
+                // Normaliser le domaine
+                if (cookie.domain) {
+                    if (cookie.domain.startsWith('.facebook.com')) {
+                        cookie.domain = 'facebook.com';
+                    } else if (cookie.domain.startsWith('.messenger.com')) {
+                        cookie.domain = 'messenger.com';
+                    }
+                }
+
+                // Assurer que les cookies critiques sont présents
+                const criticalCookies = ['datr', 'fr', 'c_user', 'xs'];
+                if (criticalCookies.includes(cookie.key) || criticalCookies.includes(cookie.name)) {
+                    cookie.httpOnly = true;
+                    cookie.secure = true;
+                }
+
+                return cookie;
             });
 
-            this.log('info', `${cleanedCookies.length} cookies valides chargés`);
-            return cleanedCookies;
+            // Filtrer les cookies valides
+            const validCookies = cookies.filter(cookie => {
+                const key = cookie.key || cookie.name;
+                return key && cookie.value && key.length > 0;
+            });
+
+            // Vérifier la présence de cookies critiques
+            const criticalCookies = ['c_user', 'xs', 'datr'];
+            const presentCritical = criticalCookies.filter(name => 
+                validCookies.some(cookie => (cookie.key === name || cookie.name === name))
+            );
+
+            if (presentCritical.length < 2) {
+                throw new Error(`Cookies critiques manquants. Présents: ${presentCritical.join(', ')}`);
+            }
+
+            this.log('info', `${validCookies.length} cookies valides chargés`);
+            this.log('info', `Cookies critiques présents: ${presentCritical.join(', ')}`);
+            
+            return validCookies;
 
         } catch (error) {
             this.log('error', 'Erreur chargement cookies:', error.message);
             throw error;
+        }
+    }
+
+    // Sauvegarder les cookies après connexion réussie
+    async saveCookies(appState) {
+        try {
+            const cookiesJson = JSON.stringify(appState, null, 2);
+            await fs.writeFile(CONFIG.COOKIES_FILE, cookiesJson);
+            this.log('info', 'Cookies sauvegardés avec succès');
+        } catch (error) {
+            this.log('error', 'Erreur sauvegarde cookies:', error.message);
         }
     }
 
@@ -243,20 +293,76 @@ class FacebookBot extends EventEmitter {
         });
     }
 
-    // Connexion avec retry et gestion d'erreurs améliorée
+    // Déterminer la méthode de connexion
+    getLoginCredentials() {
+        const method = CONFIG.LOGIN_METHOD.toLowerCase();
+        
+        switch (method) {
+            case 'email':
+                if (!CONFIG.FB_EMAIL || !CONFIG.FB_PASSWORD) {
+                    throw new Error('FB_EMAIL et FB_PASSWORD requis pour la connexion par email');
+                }
+                return {
+                    email: CONFIG.FB_EMAIL,
+                    password: CONFIG.FB_PASSWORD
+                };
+            
+            case 'phone':
+                if (!CONFIG.FB_PHONE || !CONFIG.FB_PASSWORD) {
+                    throw new Error('FB_PHONE et FB_PASSWORD requis pour la connexion par téléphone');
+                }
+                return {
+                    email: CONFIG.FB_PHONE, // facebook-chat-api utilise le champ email pour le téléphone aussi
+                    password: CONFIG.FB_PASSWORD
+                };
+            
+            case 'cookies':
+            default:
+                return null; // Utiliser les cookies
+        }
+    }
+
+    // Connexion avec multiple méthodes et gestion d'erreurs améliorée
     async connect() {
         try {
-            const cookies = await this.loadCookies();
-            
-            return new Promise((resolve, reject) => {
-                const options = {
-                    appState: cookies,
-                    pageID: process.env.PAGE_ID || null
-                };
+            const credentials = this.getLoginCredentials();
+            let options = {};
 
+            if (credentials) {
+                // Connexion avec email/téléphone + mot de passe
+                this.log('info', `Tentative de connexion avec ${CONFIG.LOGIN_METHOD}`);
+                options = {
+                    email: credentials.email,
+                    password: credentials.password
+                };
+            } else {
+                // Connexion avec cookies
+                this.log('info', 'Tentative de connexion avec cookies');
+                const cookies = await this.loadCookies();
+                options = {
+                    appState: cookies
+                };
+            }
+
+            // Ajouter des options supplémentaires
+            if (process.env.PAGE_ID) {
+                options.pageID = process.env.PAGE_ID;
+            }
+
+            return new Promise((resolve, reject) => {
                 login(options, (err, api) => {
                     if (err) {
                         this.log('error', 'Erreur connexion:', err.message);
+                        
+                        // Messages d'erreur plus explicites
+                        if (err.error === 'login-approval') {
+                            this.log('error', 'Approbation de connexion requise. Vérifiez votre téléphone/email.');
+                        } else if (err.error === 'checkpoint') {
+                            this.log('error', 'Checkpoint de sécurité détecté. Connectez-vous manuellement à Facebook.');
+                        } else if (err.error === 'Wrong username/password.') {
+                            this.log('error', 'Email/téléphone ou mot de passe incorrect.');
+                        }
+                        
                         reject(err);
                         return;
                     }
@@ -267,10 +373,15 @@ class FacebookBot extends EventEmitter {
                     api.setOptions({
                         listenEvents: true,
                         logLevel: 'silent',
-                        updatePresence: false, // Réduire la charge
+                        updatePresence: false,
                         selfListen: false,
-                        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     });
+
+                    // Sauvegarder les cookies après connexion réussie
+                    if (credentials && api.getAppState) {
+                        this.saveCookies(api.getAppState());
+                    }
 
                     resolve(api);
                 });
@@ -281,8 +392,50 @@ class FacebookBot extends EventEmitter {
         }
     }
 
+    // Validation des paramètres de connexion au démarrage
+    validateLoginConfig() {
+        const method = CONFIG.LOGIN_METHOD.toLowerCase();
+        
+        this.log('info', `Méthode de connexion: ${method}`);
+        
+        switch (method) {
+            case 'email':
+                if (!CONFIG.FB_EMAIL || !CONFIG.FB_PASSWORD) {
+                    throw new Error('Ajoutez FB_EMAIL et FB_PASSWORD dans votre fichier .env pour la connexion par email');
+                }
+                this.log('info', `Email configuré: ${CONFIG.FB_EMAIL.substring(0, 3)}***`);
+                break;
+                
+            case 'phone':
+                if (!CONFIG.FB_PHONE || !CONFIG.FB_PASSWORD) {
+                    throw new Error('Ajoutez FB_PHONE et FB_PASSWORD dans votre fichier .env pour la connexion par téléphone');
+                }
+                this.log('info', `Téléphone configuré: ${CONFIG.FB_PHONE.substring(0, 3)}***`);
+                break;
+                
+            case 'cookies':
+                if (!fsSync.existsSync(CONFIG.COOKIES_FILE)) {
+                    throw new Error(`Fichier ${CONFIG.COOKIES_FILE} manquant pour la connexion par cookies`);
+                }
+                this.log('info', 'Fichier cookies trouvé');
+                break;
+                
+            default:
+                this.log('warn', `Méthode de connexion inconnue: ${method}. Utilisation des cookies par défaut.`);
+                CONFIG.LOGIN_METHOD = 'cookies';
+        }
+    }
+
     // Démarrage avec retry automatique
     async start() {
+        try {
+            // Valider la configuration
+            this.validateLoginConfig();
+        } catch (error) {
+            this.log('error', 'Configuration invalide:', error.message);
+            process.exit(1);
+        }
+
         while (this.retryCount < CONFIG.MAX_RETRIES && !this.isShuttingDown) {
             try {
                 this.log('info', `Tentative de connexion ${this.retryCount + 1}/${CONFIG.MAX_RETRIES}`);
@@ -306,11 +459,17 @@ class FacebookBot extends EventEmitter {
                 this.retryCount++;
                 this.log('error', `Échec connexion (${this.retryCount}/${CONFIG.MAX_RETRIES}):`, error.message);
                 
+                // Suggérer une solution basée sur l'erreur
+                if (error.error === 'login-approval' || error.error === 'checkpoint') {
+                    this.log('info', '💡 Solution suggérée: Essayez de changer LOGIN_METHOD dans votre .env');
+                }
+                
                 if (this.retryCount < CONFIG.MAX_RETRIES) {
                     this.log('info', `Nouvelle tentative dans ${CONFIG.RETRY_DELAY/1000}s...`);
                     await new Promise(resolve => setTimeout(resolve, CONFIG.RETRY_DELAY));
                 } else {
                     this.log('error', 'Nombre maximum de tentatives atteint');
+                    this.log('info', '💡 Vérifiez votre configuration dans le fichier .env');
                     process.exit(1);
                 }
             }
@@ -336,6 +495,7 @@ class FacebookBot extends EventEmitter {
 
         this.log('info', '🤖 Bot démarré et en écoute...');
         this.log('info', `💬 Préfixe: ${CONFIG.COMMAND_PREFIX}`);
+        this.log('info', `🔐 Méthode de connexion: ${CONFIG.LOGIN_METHOD}`);
     }
 
     // Serveur HTTP pour le monitoring
@@ -352,6 +512,7 @@ class FacebookBot extends EventEmitter {
                 uptime: process.uptime(),
                 commands: this.commands.size,
                 retryCount: this.retryCount,
+                loginMethod: CONFIG.LOGIN_METHOD,
                 memory: process.memoryUsage()
             };
             
