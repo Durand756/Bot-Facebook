@@ -1,30 +1,39 @@
 {
   "name": "facebook-messenger-bot",
   "version": "2.0.0",
-  "description": "Bot Facebook Messenger utilisant la technique ntkhang",
+  "description": "Bot Facebook Messenger utilisant une API Facebook stable",
   "main": "Durand-bot-Fb-V1.js",
   "scripts": {
     "start": "node Durand-bot-Fb-V1.js",
     "dev": "nodemon Durand-bot-Fb-V1.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "clean": "rm -rf node_modules package-lock.json",
+    "fresh-install": "npm run clean && npm install"
   },
   "dependencies": {
-    "fb-chat-api": "^10.4.19",
-    "dotenv": "^16.0.3"
+    "fca-unofficial": "^1.3.13",
+    "dotenv": "^16.4.5",
+    "axios": "^1.6.0",
+    "fs-extra": "^11.2.0"
   },
   "devDependencies": {
-    "nodemon": "^2.0.22"
+    "nodemon": "^3.0.2"
   },
   "keywords": [
     "facebook",
     "messenger",
     "bot",
     "chat",
-    "api"
+    "api",
+    "fca"
   ],
   "author": "Votre nom",
   "license": "MIT",
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "votre-repo-url"
   }
 }
