@@ -1,0 +1,26 @@
+{
+  "name": "facebook-messenger-bot",
+  "version": "1.0.0",
+  "description": "Bot Facebook Messenger avec commandes modulaires et intégration OpenAI",
+  "main": "Durand-bot-Fb-V1.js",
+  "scripts": {
+    "start": "node Durand-bot-Fb-V1.js",
+    "dev": "nodemon Durand-bot-Fb-V1.js"
+  },
+  "keywords": ["facebook", "messenger", "bot", "openai", "chatbot"],
+  "author": "Durand Dev",
+  "license": "MIT",
+  "dependencies": {
+    "facebook-chat-api": "^1.7.0",
+    "dotenv": "^16.3.1",
+    "axios": "^1.6.2",
+    "fs": "^0.0.1-security",
+    "path": "^0.12.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
